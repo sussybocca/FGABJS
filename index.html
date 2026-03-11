@@ -105,7 +105,7 @@
     </div>
 
     <!-- Include our custom emulator -->
-    <script src="FGAB.min.js"></script>
+    <script src="FGAB.js"></script>
     <script>
         (function() {
             // Get DOM elements
@@ -143,7 +143,7 @@
             // Load a default Game Boy ROM (replace with your own)
             // For demonstration, we use a relative path – you must place a .gb file in the 'roms' folder
             // or change this URL to an absolute path to a valid ROM.
-            const defaultRom = 'roms/dude.swf'; // <-- CHANGE THIS TO YOUR ROM FILE
+            const defaultRom = 'roms/dude.gb'; // <-- CHANGE THIS TO YOUR ROM FILE
             
             // Check if the ROM exists (optional, just for user feedback)
             fetch(defaultRom, { method: 'HEAD' })
