@@ -108,106 +108,72 @@
     <script src="FGAB.js"></script>
     <script>
         (function() {
-            // Get DOM elements
             const canvas = document.getElementById('gbCanvas');
             const statusEl = document.getElementById('status');
             const romNameEl = document.getElementById('romName');
             const loadButton = document.getElementById('loadButton');
             const fileInput = document.getElementById('fileInput');
 
-            // FGAB instance
             let emulator = null;
 
-            // Function to load and start a ROM from a URL
-            function loadROMFromUrl(url) {
-                if (!emulator) {
-                    emulator = new FGAB(canvas);
-                }
-                
+            // Async function to load ROM from URL (or binary)
+            async function loadROMFromUrl(url) {
+                if (!emulator) emulator = new FGAB(canvas);
                 statusEl.textContent = '⏳ Loading ROM...';
                 romNameEl.textContent = url.split('/').pop();
-                
                 try {
-                    emulator.loadROM(url);
-                    // Give it a moment to load, then start
-                    setTimeout(() => {
-                        emulator.start();
-                        statusEl.textContent = '✅ Running';
-                    }, 500);
+                    await emulator.loadROM(url);
+                    emulator.start();
+                    statusEl.textContent = '✅ Running';
                 } catch (e) {
                     statusEl.textContent = '❌ Error loading ROM';
                     console.error(e);
                 }
             }
 
-            // Load a default Game Boy ROM (replace with your own)
-            // For demonstration, we use a relative path – you must place a .gb file in the 'roms' folder
-            // or change this URL to an absolute path to a valid ROM.
-            const defaultRom = 'roms/dude.gbc'; // <-- CHANGE THIS TO YOUR ROM FILE
-            
-            // Check if the ROM exists (optional, just for user feedback)
-            fetch(defaultRom, { method: 'HEAD' })
-                .then(response => {
-                    if (response.ok) {
-                        loadROMFromUrl(defaultRom);
-                    } else {
-                        statusEl.textContent = '⚠️ Default ROM not found. Use file picker.';
-                        romNameEl.textContent = '[none]';
-                        // Still create emulator but don't load
-                        emulator = new FGAB(canvas);
-                    }
-                })
-                .catch(() => {
-                    statusEl.textContent = '⚠️ Default ROM not accessible. Use file picker.';
-                    romNameEl.textContent = '[none]';
-                    emulator = new FGAB(canvas);
-                });
-
-            // Handle file picker for local files
-            loadButton.addEventListener('click', () => {
-                fileInput.click();
+            // Try to load default ROM (update path to your actual ROM file)
+            const defaultRom = 'roms/dude.gbc';
+            // Attempt to load – if it fails, show a message and create emulator anyway
+            loadROMFromUrl(defaultRom).catch(() => {
+                statusEl.textContent = '⚠️ Default ROM not found. Use file picker.';
+                romNameEl.textContent = '[none]';
+                emulator = new FGAB(canvas);
             });
 
-            fileInput.addEventListener('change', (event) => {
+            // File picker: load local file
+            fileInput.addEventListener('change', async (event) => {
                 const file = event.target.files[0];
                 if (!file) return;
 
-                const url = URL.createObjectURL(file);
                 romNameEl.textContent = file.name;
                 statusEl.textContent = '⏳ Loading local file...';
 
-                if (!emulator) {
-                    emulator = new FGAB(canvas);
-                }
+                if (!emulator) emulator = new FGAB(canvas);
 
-                // Determine mode by extension
                 const ext = file.name.split('.').pop().toLowerCase();
-                if (ext === 'gb' || ext === 'gbc') {
-                    // For Game Boy, we need to read the file as array buffer and pass to loadROM
-                    const reader = new FileReader();
-                    reader.onload = function(e) {
-                        const arrayBuffer = e.target.result;
-                        const uint8View = new Uint8Array(arrayBuffer);
-                        // FGAB's loadROM expects a URL, but we can also extend it to accept binary data.
-                        // Since our FGAB currently only accepts URL, we need to either modify FGAB or create a blob URL.
-                        // Let's create a blob URL from the file.
-                        const blob = new Blob([arrayBuffer], { type: 'application/octet-stream' });
-                        const blobUrl = URL.createObjectURL(blob);
-                        emulator.loadROM(blobUrl);
-                        setTimeout(() => {
-                            emulator.start();
-                            statusEl.textContent = '✅ Running';
-                        }, 500);
-                    };
-                    reader.readAsArrayBuffer(file);
-                } else if (ext === 'swf') {
-                    // Flash: just pass the blob URL
-                    const blobUrl = URL.createObjectURL(file);
-                    emulator.loadROM(blobUrl);
-                    statusEl.textContent = '✅ Flash loaded (may not work in modern browsers)';
-                } else {
-                    statusEl.textContent = '❌ Unsupported file type';
+                try {
+                    if (ext === 'gb' || ext === 'gbc') {
+                        const arrayBuffer = await file.arrayBuffer();
+                        await emulator.loadROM(new Uint8Array(arrayBuffer));
+                        emulator.start();
+                        statusEl.textContent = '✅ Running';
+                    } else if (ext === 'swf') {
+                        // Flash is deprecated – pass as URL
+                        const blobUrl = URL.createObjectURL(file);
+                        await emulator.loadROM(blobUrl);
+                        statusEl.textContent = '⚠️ Flash may not work in modern browsers';
+                    } else {
+                        statusEl.textContent = '❌ Unsupported file type';
+                    }
+                } catch (e) {
+                    statusEl.textContent = '❌ Error loading ROM';
+                    console.error(e);
                 }
+            });
+
+            // Click button to open file dialog
+            loadButton.addEventListener('click', () => {
+                fileInput.click();
             });
         })();
     </script>
