@@ -1,6 +1,6 @@
 /**
  * FGAB.js – FlashGamesGameBoy Emulator
- * Version 1.0.0
+ * Version 1.1.0
  * 
  * A pure JavaScript, dependency‑free emulator for Game Boy ROMs (.gb) and Flash games (.swf).
  * 
@@ -174,7 +174,20 @@
                     cycles = 16;
                     break;
                 }
+                // Immediate loads (LD r,n)
+                case 0x06: this.B = this.mmu.rb(this.PC++); cycles = 8; break; // LD B,n
+                case 0x0E: this.C = this.mmu.rb(this.PC++); cycles = 8; break; // LD C,n
+                case 0x16: this.D = this.mmu.rb(this.PC++); cycles = 8; break; // LD D,n
+                case 0x1E: this.E = this.mmu.rb(this.PC++); cycles = 8; break; // LD E,n
+                case 0x26: this.H = this.mmu.rb(this.PC++); cycles = 8; break; // LD H,n
+                case 0x2E: this.L = this.mmu.rb(this.PC++); cycles = 8; break; // LD L,n
+                case 0x36: // LD (HL),n
+                    this.mmu.wb(this.HL, this.mmu.rb(this.PC++));
+                    cycles = 12;
+                    break;
                 case 0x3E: this.A = this.mmu.rb(this.PC++); cycles = 8; break; // LD A,n
+
+                // 16‑bit loads
                 case 0x01: { // LD BC,nn
                     const lo = this.mmu.rb(this.PC++);
                     const hi = this.mmu.rb(this.PC++);
@@ -204,9 +217,30 @@
                     break;
                 }
                 case 0xF9: this.SP = this.HL; cycles = 8; break; // LD SP,HL
+
+                // LD (nn),A and variants
                 case 0x02: this.mmu.wb(this.BC, this.A); cycles = 8; break; // LD (BC),A
                 case 0x12: this.mmu.wb(this.DE, this.A); cycles = 8; break; // LD (DE),A
-                case 0x77: this.mmu.wb(this.HL, this.A); cycles = 8; break; // LD (HL),A
+                case 0x22: // LD (HL+),A
+                    this.mmu.wb(this.HL, this.A);
+                    this.HL = (this.HL + 1) & 0xFFFF;
+                    cycles = 8;
+                    break;
+                case 0x32: // LD (HL-),A
+                    this.mmu.wb(this.HL, this.A);
+                    this.HL = (this.HL - 1) & 0xFFFF;
+                    cycles = 8;
+                    break;
+                case 0x2A: // LD A,(HL+)
+                    this.A = this.mmu.rb(this.HL);
+                    this.HL = (this.HL + 1) & 0xFFFF;
+                    cycles = 8;
+                    break;
+                case 0x3A: // LD A,(HL-)
+                    this.A = this.mmu.rb(this.HL);
+                    this.HL = (this.HL - 1) & 0xFFFF;
+                    cycles = 8;
+                    break;
                 case 0xEA: { // LD (nn),A
                     const lo = this.mmu.rb(this.PC++);
                     const hi = this.mmu.rb(this.PC++);
@@ -215,6 +249,17 @@
                     cycles = 16;
                     break;
                 }
+                case 0x08: { // LD (nn),SP
+                    const lo = this.mmu.rb(this.PC++);
+                    const hi = this.mmu.rb(this.PC++);
+                    const addr = (hi << 8) | lo;
+                    this.mmu.wb(addr, this.SP & 0xFF);
+                    this.mmu.wb(addr + 1, (this.SP >> 8) & 0xFF);
+                    cycles = 20;
+                    break;
+                }
+
+                // I/O port loads
                 case 0xE0: { // LD (FF00+n),A
                     const offset = this.mmu.rb(this.PC++);
                     this.mmu.wb(0xFF00 + offset, this.A);
@@ -227,6 +272,15 @@
                     cycles = 12;
                     break;
                 }
+                case 0xE2: // LD (C),A  (LD (FF00+C),A)
+                    this.mmu.wb(0xFF00 + this.C, this.A);
+                    cycles = 8;
+                    break;
+                case 0xF2: // LD A,(C)   (LD A,(FF00+C))
+                    this.A = this.mmu.rb(0xFF00 + this.C);
+                    cycles = 8;
+                    break;
+
                 // 16‑bit loads (PUSH/POP)
                 case 0xC5: this.push(this.BC); cycles = 16; break;
                 case 0xD5: this.push(this.DE); cycles = 16; break;
@@ -353,6 +407,18 @@
                     cycles = 16;
                     break;
                 }
+                case 0xF8: { // LD HL,SP+n
+                    const n = this.mmu.rb(this.PC++);
+                    const sp = this.SP;
+                    const res = sp + (n << 24 >> 24);
+                    this.HL = res & 0xFFFF;
+                    this.flagZ = false;
+                    this.flagN = false;
+                    this.flagH = ((sp & 0xF) + (n & 0xF)) > 0xF;
+                    this.flagC = ((sp & 0xFF) + (n & 0xFF)) > 0xFF;
+                    cycles = 12;
+                    break;
+                }
                 case 0x03: this.BC = (this.BC + 1) & 0xFFFF; cycles = 8; break; // INC BC
                 case 0x13: this.DE = (this.DE + 1) & 0xFFFF; cycles = 8; break;
                 case 0x23: this.HL = (this.HL + 1) & 0xFFFF; cycles = 8; break;
@@ -373,6 +439,12 @@
                     cycles = this.execCB(subop);
                     break;
                 }
+
+                // Misc ALU
+                case 0x27: this.daa(); cycles = 4; break;   // DAA
+                case 0x2F: this.cpl(); cycles = 4; break;   // CPL
+                case 0x37: this.scf(); cycles = 4; break;   // SCF
+                case 0x3F: this.ccf(); cycles = 4; break;   // CCF
 
                 // Jumps
                 case 0xC3: { // JP nn
@@ -412,6 +484,7 @@
                 }
                 case 0xE9: this.PC = this.HL; cycles = 4; break; // JP (HL)
 
+                // Relative jumps
                 case 0x18: { // JR n
                     const n = this.mmu.rb(this.PC++);
                     this.PC += (n << 24 >> 24); // sign‑extend
@@ -953,6 +1026,47 @@
             this.flagN = false;
             this.flagH = false;
             this.flagC = c === 1;
+        }
+
+        // DAA, CPL, SCF, CCF
+        daa() {
+            let a = this.A;
+            if (!this.flagN) {
+                // after addition
+                if (this.flagC || a > 0x99) {
+                    a += 0x60;
+                    this.flagC = true;
+                }
+                if (this.flagH || (a & 0x0F) > 0x09) {
+                    a += 0x06;
+                }
+            } else {
+                // after subtraction
+                if (this.flagC) {
+                    a -= 0x60;
+                }
+                if (this.flagH) {
+                    a -= 0x06;
+                }
+            }
+            this.A = a & 0xFF;
+            this.flagZ = (this.A === 0);
+            this.flagH = false;
+        }
+        cpl() {
+            this.A = ~this.A & 0xFF;
+            this.flagN = true;
+            this.flagH = true;
+        }
+        scf() {
+            this.flagN = false;
+            this.flagH = false;
+            this.flagC = true;
+        }
+        ccf() {
+            this.flagN = false;
+            this.flagH = false;
+            this.flagC = !this.flagC;
         }
 
         // Stack operations
