@@ -23,23 +23,17 @@
 (function(global) {
     'use strict';
 
-    // ----------------------------------------------------------------------
-    // Utility functions
-    // ----------------------------------------------------------------------
-    function loadBinary(url, callback) {
-        const xhr = new XMLHttpRequest();
-        xhr.open('GET', url, true);
-        xhr.responseType = 'arraybuffer';
-        xhr.onload = function() {
-            if (this.status === 200) {
-                callback(new Uint8Array(this.response));
-            } else {
-                console.error('FGAB: Failed to load', url);
-            }
-        };
-        xhr.onerror = () => console.error('FGAB: Network error loading', url);
-        xhr.send();
+   // ----------------------------------------------------------------------
+// Utility: load binary data from URL or ArrayBuffer
+// ----------------------------------------------------------------------
+async function loadBinary(url) {
+    if (url instanceof Uint8Array || url instanceof ArrayBuffer) {
+        return new Uint8Array(url);
     }
+    const response = await fetch(url);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return new Uint8Array(await response.arrayBuffer());
+}
 
     // ----------------------------------------------------------------------
     // CPU – LR35902 (Game Boy CPU)
@@ -1572,32 +1566,28 @@
             this.mode = null;
         }
 
-        loadROM(url) {
-            const ext = url.split('.').pop().toLowerCase();
-            if (ext === 'gb' || ext === 'gbc') {
-                this.mode = 'gb';
-                if (!(this.element instanceof HTMLCanvasElement)) {
-                    console.error('FGAB: Game Boy mode requires a canvas element');
-                    return;
-                }
-                this.gb = new GameBoy(this.element);
-                loadBinary(url, (data) => {
-                    this.gb.loadROM(data);
-                });
-            } else if (ext === 'swf') {
-                this.mode = 'flash';
-                if (!(this.element instanceof HTMLElement)) {
-                    console.error('FGAB: Flash mode requires an HTML element');
-                    return;
-                }
-                this.flash = new FlashPlayer(this.element);
-                this.flash.loadSWF(url);
-                console.warn('FGAB: Flash is deprecated and will not work in modern browsers. Consider using Ruffle (https://ruffle.rs).');
-            } else {
-                console.error('FGAB: Unsupported file extension', ext);
-            }
+        async loadROM(url) {
+    const ext = url.split('.').pop().toLowerCase();
+    if (ext === 'gb' || ext === 'gbc') {
+        this.mode = 'gb';
+        if (!(this.element instanceof HTMLCanvasElement)) {
+            throw new Error('FGAB: Game Boy mode requires a canvas element');
         }
-
+        this.gb = new GameBoy(this.element);
+        const data = await loadBinary(url);
+        this.gb.loadROM(data);
+    } else if (ext === 'swf') {
+        this.mode = 'flash';
+        if (!(this.element instanceof HTMLElement)) {
+            throw new Error('FGAB: Flash mode requires an HTML element');
+        }
+        this.flash = new FlashPlayer(this.element);
+        this.flash.loadSWF(url);
+        console.warn('FGAB: Flash is deprecated and will not work in modern browsers. Consider using Ruffle (https://ruffle.rs).');
+    } else {
+        throw new Error(`FGAB: Unsupported file extension ${ext}`);
+    }
+}
         start() {
             if (this.mode === 'gb' && this.gb) {
                 this.gb.start();
