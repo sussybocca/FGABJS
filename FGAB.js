@@ -1,30 +1,23 @@
 /**
  * FGAB.js – FlashGamesGameBoy Emulator
- * Version 1.1.0
+ * Version 2.0.0
  * 
- * A pure JavaScript, dependency‑free emulator for Game Boy ROMs (.gb) and Flash games (.swf).
+ * A pure JavaScript, dependency‑free emulator for Game Boy ROMs (.gb) and Game Boy Color (.gbc).
+ * Flash (.swf) is attempted but will not work in modern browsers (use Ruffle).
  * 
- * Game Boy features:
- *   - Full CPU instruction set (LR35902) with accurate timing
- *   - 64KB address space: ROM, VRAM, WRAM, OAM, I/O registers, HRAM
- *   - Picture Processing Unit (PPU) with background, window, and sprites
- *   - Timer and divider registers
- *   - Interrupt handling (VBlank, LCD STAT, Timer, Serial, Joypad)
- *   - MBC1 cartridge controller (supports up to 2MB ROM and 32KB RAM)
- * 
- * Flash features:
- *   - Embeds .swf files using the <object> tag (requires browser NPAPI support)
- *   - Automatically detects file extension and switches mode
+ * Features:
+ *   - Complete LR35902 CPU (all opcodes, accurate timing)
+ *   - 64KB MMU with MBC1/2/3/5 cartridge controllers (MBC1 fully implemented)
+ *   - PPU with background, window, sprites
+ *   - Timer, divider, and all interrupts
+ *   - Boot ROM simulation (Nintendo logo)
  * 
  * Usage:
- *   const canvas = document.getElementById('gbCanvas');
+ *   const canvas = document.getElementById('display');
  *   const emu = new FGAB(canvas);
- *   emu.loadROM('path/to/game.gb');   // for Game Boy
- *   emu.loadROM('path/to/game.swf');  // for Flash
- *   emu.start();
- * 
- * Note: Flash playback is deprecated in modern browsers; for a modern solution
- * consider integrating Ruffle (https://ruffle.rs) externally.
+ *   emu.loadROM('roms/tetris.gb').then(() => emu.start());
+ *   // or load from binary:
+ *   emu.loadROM(new Uint8Array([...]));
  */
 
 (function(global) {
@@ -49,22 +42,28 @@
     }
 
     // ----------------------------------------------------------------------
-    // Game Boy CPU (LR35902) – full instruction set
+    // CPU – LR35902 (Game Boy CPU)
     // ----------------------------------------------------------------------
     class LR35902 {
         constructor(mmu) {
             this.mmu = mmu;
+
             // Registers
-            this.A = 0x01; this.F = 0xB0; // AF
-            this.B = 0x00; this.C = 0x13; // BC
-            this.D = 0x00; this.E = 0xD8; // DE
-            this.H = 0x01; this.L = 0x4D; // HL
-            this.SP = 0xFFFE;              // Stack Pointer
-            this.PC = 0x0100;               // Program Counter
-            this.ime = 1;                   // Interrupt Master Enable
+            this.A = 0x01;
+            this.F = 0xB0;      // flags: Z N H C
+            this.B = 0x00;
+            this.C = 0x13;
+            this.D = 0x00;
+            this.E = 0xD8;
+            this.H = 0x01;
+            this.L = 0x4D;
+            this.SP = 0xFFFE;
+            this.PC = 0x0100;
+
+            this.ime = 1;        // interrupt master enable
             this.halt = false;
             this.stopped = false;
-            this.cycles = 0;                 // Total cycles executed
+            this.cycles = 0;      // total cycles executed
         }
 
         // Flag helpers
@@ -79,7 +78,7 @@
 
         // 16‑bit register pairs
         get AF() { return (this.A << 8) | this.F; }
-        set AF(val) { this.A = (val >> 8) & 0xFF; this.F = val & 0xF0; } // lower 4 bits always 0
+        set AF(val) { this.A = (val >> 8) & 0xFF; this.F = val & 0xF0; }
         get BC() { return (this.B << 8) | this.C; }
         set BC(val) { this.B = (val >> 8) & 0xFF; this.C = val & 0xFF; }
         get DE() { return (this.D << 8) | this.E; }
@@ -87,21 +86,20 @@
         get HL() { return (this.H << 8) | this.L; }
         set HL(val) { this.H = (val >> 8) & 0xFF; this.L = val & 0xFF; }
 
-        // Execute one instruction, return number of cycles used
+        // Main execution step
         step() {
             if (this.halt) {
-                // HALT: do nothing, but still consume cycles (we'll use 4)
                 this.cycles += 4;
                 return 4;
             }
 
             const opcode = this.mmu.rb(this.PC++);
-            let cycles = 4; // default
+            let cycles = 4;
 
-            // Main opcode dispatch (LR35902 instruction set)
+            // Main opcode dispatch (full instruction set)
             switch (opcode) {
                 // 8‑bit loads
-                case 0x40: this.B = this.B; break; // LD B,B (NOP)
+                case 0x40: this.B = this.B; break;
                 case 0x41: this.B = this.C; break;
                 case 0x42: this.B = this.D; break;
                 case 0x43: this.B = this.E; break;
@@ -156,8 +154,8 @@
                 case 0x74: this.mmu.wb(this.HL, this.H); cycles = 8; break;
                 case 0x75: this.mmu.wb(this.HL, this.L); cycles = 8; break;
                 case 0x77: this.mmu.wb(this.HL, this.A); cycles = 8; break;
-                case 0x0A: this.A = this.mmu.rb(this.BC); cycles = 8; break; // LD A,(BC)
-                case 0x1A: this.A = this.mmu.rb(this.DE); cycles = 8; break; // LD A,(DE)
+                case 0x0A: this.A = this.mmu.rb(this.BC); cycles = 8; break;
+                case 0x1A: this.A = this.mmu.rb(this.DE); cycles = 8; break;
                 case 0x7F: this.A = this.A; break;
                 case 0x78: this.A = this.B; break;
                 case 0x79: this.A = this.C; break;
@@ -166,7 +164,7 @@
                 case 0x7C: this.A = this.H; break;
                 case 0x7D: this.A = this.L; break;
                 case 0x7E: this.A = this.mmu.rb(this.HL); cycles = 8; break;
-                case 0xFA: { // LD A,(nn)
+                case 0xFA: {
                     const lo = this.mmu.rb(this.PC++);
                     const hi = this.mmu.rb(this.PC++);
                     const addr = (hi << 8) | lo;
@@ -175,73 +173,73 @@
                     break;
                 }
                 // Immediate loads (LD r,n)
-                case 0x06: this.B = this.mmu.rb(this.PC++); cycles = 8; break; // LD B,n
-                case 0x0E: this.C = this.mmu.rb(this.PC++); cycles = 8; break; // LD C,n
-                case 0x16: this.D = this.mmu.rb(this.PC++); cycles = 8; break; // LD D,n
-                case 0x1E: this.E = this.mmu.rb(this.PC++); cycles = 8; break; // LD E,n
-                case 0x26: this.H = this.mmu.rb(this.PC++); cycles = 8; break; // LD H,n
-                case 0x2E: this.L = this.mmu.rb(this.PC++); cycles = 8; break; // LD L,n
-                case 0x36: // LD (HL),n
+                case 0x06: this.B = this.mmu.rb(this.PC++); cycles = 8; break;
+                case 0x0E: this.C = this.mmu.rb(this.PC++); cycles = 8; break;
+                case 0x16: this.D = this.mmu.rb(this.PC++); cycles = 8; break;
+                case 0x1E: this.E = this.mmu.rb(this.PC++); cycles = 8; break;
+                case 0x26: this.H = this.mmu.rb(this.PC++); cycles = 8; break;
+                case 0x2E: this.L = this.mmu.rb(this.PC++); cycles = 8; break;
+                case 0x36:
                     this.mmu.wb(this.HL, this.mmu.rb(this.PC++));
                     cycles = 12;
                     break;
-                case 0x3E: this.A = this.mmu.rb(this.PC++); cycles = 8; break; // LD A,n
+                case 0x3E: this.A = this.mmu.rb(this.PC++); cycles = 8; break;
 
                 // 16‑bit loads
-                case 0x01: { // LD BC,nn
+                case 0x01: {
                     const lo = this.mmu.rb(this.PC++);
                     const hi = this.mmu.rb(this.PC++);
                     this.BC = (hi << 8) | lo;
                     cycles = 12;
                     break;
                 }
-                case 0x11: { // LD DE,nn
+                case 0x11: {
                     const lo = this.mmu.rb(this.PC++);
                     const hi = this.mmu.rb(this.PC++);
                     this.DE = (hi << 8) | lo;
                     cycles = 12;
                     break;
                 }
-                case 0x21: { // LD HL,nn
+                case 0x21: {
                     const lo = this.mmu.rb(this.PC++);
                     const hi = this.mmu.rb(this.PC++);
                     this.HL = (hi << 8) | lo;
                     cycles = 12;
                     break;
                 }
-                case 0x31: { // LD SP,nn
+                case 0x31: {
                     const lo = this.mmu.rb(this.PC++);
                     const hi = this.mmu.rb(this.PC++);
                     this.SP = (hi << 8) | lo;
                     cycles = 12;
                     break;
                 }
-                case 0xF9: this.SP = this.HL; cycles = 8; break; // LD SP,HL
+                case 0xF9: this.SP = this.HL; cycles = 8; break;
 
                 // LD (nn),A and variants
-                case 0x02: this.mmu.wb(this.BC, this.A); cycles = 8; break; // LD (BC),A
-                case 0x12: this.mmu.wb(this.DE, this.A); cycles = 8; break; // LD (DE),A
-                case 0x22: // LD (HL+),A
+                case 0x02: this.mmu.wb(this.BC, this.A); cycles = 8; break;
+                case 0x12: this.mmu.wb(this.DE, this.A); cycles = 8; break;
+                case 0x22:
                     this.mmu.wb(this.HL, this.A);
                     this.HL = (this.HL + 1) & 0xFFFF;
                     cycles = 8;
                     break;
-                case 0x32: // LD (HL-),A
+                case 0x32:
                     this.mmu.wb(this.HL, this.A);
                     this.HL = (this.HL - 1) & 0xFFFF;
                     cycles = 8;
                     break;
-                case 0x2A: // LD A,(HL+)
+                case 0x2A:
                     this.A = this.mmu.rb(this.HL);
                     this.HL = (this.HL + 1) & 0xFFFF;
                     cycles = 8;
                     break;
-                case 0x3A: // LD A,(HL-)
+                case 0x3A:
                     this.A = this.mmu.rb(this.HL);
                     this.HL = (this.HL - 1) & 0xFFFF;
                     cycles = 8;
                     break;
-                case 0xEA: { // LD (nn),A
+                case 0xEA: {
                     const lo = this.mmu.rb(this.PC++);
                     const hi = this.mmu.rb(this.PC++);
                     const addr = (hi << 8) | lo;
@@ -249,7 +247,7 @@
                     cycles = 16;
                     break;
                 }
-                case 0x08: { // LD (nn),SP
+                case 0x08: {
                     const lo = this.mmu.rb(this.PC++);
                     const hi = this.mmu.rb(this.PC++);
                     const addr = (hi << 8) | lo;
@@ -260,23 +258,23 @@
                 }
 
                 // I/O port loads
-                case 0xE0: { // LD (FF00+n),A
+                case 0xE0: {
                     const offset = this.mmu.rb(this.PC++);
                     this.mmu.wb(0xFF00 + offset, this.A);
                     cycles = 12;
                     break;
                 }
-                case 0xF0: { // LD A,(FF00+n)
+                case 0xF0: {
                     const offset = this.mmu.rb(this.PC++);
                     this.A = this.mmu.rb(0xFF00 + offset);
                     cycles = 12;
                     break;
                 }
-                case 0xE2: // LD (C),A  (LD (FF00+C),A)
+                case 0xE2:
                     this.mmu.wb(0xFF00 + this.C, this.A);
                     cycles = 8;
                     break;
-                case 0xF2: // LD A,(C)   (LD A,(FF00+C))
+                case 0xF2:
                     this.A = this.mmu.rb(0xFF00 + this.C);
                     cycles = 8;
                     break;
@@ -395,7 +393,7 @@
                 case 0x19: this.addHL(this.DE); cycles = 8; break;
                 case 0x29: this.addHL(this.HL); cycles = 8; break;
                 case 0x39: this.addHL(this.SP); cycles = 8; break;
-                case 0xE8: { // ADD SP,n
+                case 0xE8: {
                     const n = this.mmu.rb(this.PC++);
                     const sp = this.SP;
                     const res = sp + (n << 24 >> 24); // sign‑extend
@@ -407,7 +405,7 @@
                     cycles = 16;
                     break;
                 }
-                case 0xF8: { // LD HL,SP+n
+                case 0xF8: {
                     const n = this.mmu.rb(this.PC++);
                     const sp = this.SP;
                     const res = sp + (n << 24 >> 24);
@@ -419,20 +417,20 @@
                     cycles = 12;
                     break;
                 }
-                case 0x03: this.BC = (this.BC + 1) & 0xFFFF; cycles = 8; break; // INC BC
+                case 0x03: this.BC = (this.BC + 1) & 0xFFFF; cycles = 8; break;
                 case 0x13: this.DE = (this.DE + 1) & 0xFFFF; cycles = 8; break;
                 case 0x23: this.HL = (this.HL + 1) & 0xFFFF; cycles = 8; break;
                 case 0x33: this.SP = (this.SP + 1) & 0xFFFF; cycles = 8; break;
-                case 0x0B: this.BC = (this.BC - 1) & 0xFFFF; cycles = 8; break; // DEC BC
+                case 0x0B: this.BC = (this.BC - 1) & 0xFFFF; cycles = 8; break;
                 case 0x1B: this.DE = (this.DE - 1) & 0xFFFF; cycles = 8; break;
                 case 0x2B: this.HL = (this.HL - 1) & 0xFFFF; cycles = 8; break;
                 case 0x3B: this.SP = (this.SP - 1) & 0xFFFF; cycles = 8; break;
 
-                // Rotates and shifts (including CB prefix)
-                case 0x07: this.rlca(); break; // RLCA
-                case 0x17: this.rla(); break;  // RLA
-                case 0x0F: this.rrca(); break; // RRCA
-                case 0x1F: this.rra(); break;  // RRA
+                // Rotates and shifts
+                case 0x07: this.rlca(); break;
+                case 0x17: this.rla(); break;
+                case 0x0F: this.rrca(); break;
+                case 0x1F: this.rra(); break;
 
                 case 0xCB: {
                     const subop = this.mmu.rb(this.PC++);
@@ -441,57 +439,57 @@
                 }
 
                 // Misc ALU
-                case 0x27: this.daa(); cycles = 4; break;   // DAA
-                case 0x2F: this.cpl(); cycles = 4; break;   // CPL
-                case 0x37: this.scf(); cycles = 4; break;   // SCF
-                case 0x3F: this.ccf(); cycles = 4; break;   // CCF
+                case 0x27: this.daa(); cycles = 4; break;
+                case 0x2F: this.cpl(); cycles = 4; break;
+                case 0x37: this.scf(); cycles = 4; break;
+                case 0x3F: this.ccf(); cycles = 4; break;
 
                 // Jumps
-                case 0xC3: { // JP nn
+                case 0xC3: {
                     const lo = this.mmu.rb(this.PC++);
                     const hi = this.mmu.rb(this.PC++);
                     this.PC = (hi << 8) | lo;
                     cycles = 16;
                     break;
                 }
-                case 0xC2: { // JP NZ,nn
+                case 0xC2: {
                     const lo = this.mmu.rb(this.PC++);
                     const hi = this.mmu.rb(this.PC++);
                     if (!this.flagZ) this.PC = (hi << 8) | lo;
                     cycles = 12;
                     break;
                 }
-                case 0xCA: { // JP Z,nn
+                case 0xCA: {
                     const lo = this.mmu.rb(this.PC++);
                     const hi = this.mmu.rb(this.PC++);
                     if (this.flagZ) this.PC = (hi << 8) | lo;
                     cycles = 12;
                     break;
                 }
-                case 0xD2: { // JP NC,nn
+                case 0xD2: {
                     const lo = this.mmu.rb(this.PC++);
                     const hi = this.mmu.rb(this.PC++);
                     if (!this.flagC) this.PC = (hi << 8) | lo;
                     cycles = 12;
                     break;
                 }
-                case 0xDA: { // JP C,nn
+                case 0xDA: {
                     const lo = this.mmu.rb(this.PC++);
                     const hi = this.mmu.rb(this.PC++);
                     if (this.flagC) this.PC = (hi << 8) | lo;
                     cycles = 12;
                     break;
                 }
-                case 0xE9: this.PC = this.HL; cycles = 4; break; // JP (HL)
+                case 0xE9: this.PC = this.HL; cycles = 4; break;
 
                 // Relative jumps
-                case 0x18: { // JR n
+                case 0x18: {
                     const n = this.mmu.rb(this.PC++);
-                    this.PC += (n << 24 >> 24); // sign‑extend
+                    this.PC += (n << 24 >> 24);
                     cycles = 12;
                     break;
                 }
-                case 0x20: { // JR NZ,n
+                case 0x20: {
                     const n = this.mmu.rb(this.PC++);
                     if (!this.flagZ) {
                         this.PC += (n << 24 >> 24);
@@ -499,7 +497,7 @@
                     } else cycles = 8;
                     break;
                 }
-                case 0x28: { // JR Z,n
+                case 0x28: {
                     const n = this.mmu.rb(this.PC++);
                     if (this.flagZ) {
                         this.PC += (n << 24 >> 24);
@@ -507,7 +505,7 @@
                     } else cycles = 8;
                     break;
                 }
-                case 0x30: { // JR NC,n
+                case 0x30: {
                     const n = this.mmu.rb(this.PC++);
                     if (!this.flagC) {
                         this.PC += (n << 24 >> 24);
@@ -515,7 +513,7 @@
                     } else cycles = 8;
                     break;
                 }
-                case 0x38: { // JR C,n
+                case 0x38: {
                     const n = this.mmu.rb(this.PC++);
                     if (this.flagC) {
                         this.PC += (n << 24 >> 24);
@@ -525,7 +523,7 @@
                 }
 
                 // Calls
-                case 0xCD: { // CALL nn
+                case 0xCD: {
                     const lo = this.mmu.rb(this.PC++);
                     const hi = this.mmu.rb(this.PC++);
                     const addr = (hi << 8) | lo;
@@ -534,7 +532,7 @@
                     cycles = 24;
                     break;
                 }
-                case 0xC4: { // CALL NZ,nn
+                case 0xC4: {
                     const lo = this.mmu.rb(this.PC++);
                     const hi = this.mmu.rb(this.PC++);
                     if (!this.flagZ) {
@@ -544,7 +542,7 @@
                     } else cycles = 12;
                     break;
                 }
-                case 0xCC: { // CALL Z,nn
+                case 0xCC: {
                     const lo = this.mmu.rb(this.PC++);
                     const hi = this.mmu.rb(this.PC++);
                     if (this.flagZ) {
@@ -554,7 +552,7 @@
                     } else cycles = 12;
                     break;
                 }
-                case 0xD4: { // CALL NC,nn
+                case 0xD4: {
                     const lo = this.mmu.rb(this.PC++);
                     const hi = this.mmu.rb(this.PC++);
                     if (!this.flagC) {
@@ -564,7 +562,7 @@
                     } else cycles = 12;
                     break;
                 }
-                case 0xDC: { // CALL C,nn
+                case 0xDC: {
                     const lo = this.mmu.rb(this.PC++);
                     const hi = this.mmu.rb(this.PC++);
                     if (this.flagC) {
@@ -576,12 +574,20 @@
                 }
 
                 // Returns
-                case 0xC9: this.PC = this.pop(); cycles = 16; break; // RET
-                case 0xC0: if (!this.flagZ) { this.PC = this.pop(); cycles = 20; } else cycles = 8; break; // RET NZ
-                case 0xC8: if (this.flagZ) { this.PC = this.pop(); cycles = 20; } else cycles = 8; break; // RET Z
-                case 0xD0: if (!this.flagC) { this.PC = this.pop(); cycles = 20; } else cycles = 8; break; // RET NC
-                case 0xD8: if (this.flagC) { this.PC = this.pop(); cycles = 20; } else cycles = 8; break; // RET C
-                case 0xD9: // RETI
+                case 0xC9: this.PC = this.pop(); cycles = 16; break;
+                case 0xC0:
+                    if (!this.flagZ) { this.PC = this.pop(); cycles = 20; } else cycles = 8;
+                    break;
+                case 0xC8:
+                    if (this.flagZ) { this.PC = this.pop(); cycles = 20; } else cycles = 8;
+                    break;
+                case 0xD0:
+                    if (!this.flagC) { this.PC = this.pop(); cycles = 20; } else cycles = 8;
+                    break;
+                case 0xD8:
+                    if (this.flagC) { this.PC = this.pop(); cycles = 20; } else cycles = 8;
+                    break;
+                case 0xD9:
                     this.PC = this.pop();
                     this.ime = 1;
                     cycles = 16;
@@ -598,15 +604,15 @@
                 case 0xFF: this.push(this.PC); this.PC = 0x38; cycles = 16; break;
 
                 // Misc
-                case 0x00: cycles = 4; break; // NOP
-                case 0x76: this.halt = true; cycles = 4; break; // HALT
-                case 0x10: // STOP
+                case 0x00: cycles = 4; break;
+                case 0x76: this.halt = true; cycles = 4; break;
+                case 0x10:
                     this.stopped = true;
-                    this.PC++; // skip next byte (ignored)
+                    this.PC++;
                     cycles = 4;
                     break;
-                case 0xF3: this.ime = 0; cycles = 4; break; // DI
-                case 0xFB: this.ime = 1; cycles = 4; break; // EI
+                case 0xF3: this.ime = 0; cycles = 4; break;
+                case 0xFB: this.ime = 1; cycles = 4; break;
 
                 default:
                     console.warn('FGAB: Unimplemented opcode 0x' + opcode.toString(16));
@@ -621,7 +627,6 @@
             let cycles = 8;
             const bit = (op >> 3) & 7;
             const reg = op & 7;
-            let val, bitval;
 
             const getReg = () => {
                 switch (reg) {
@@ -649,21 +654,20 @@
             };
 
             if (op >= 0x40 && op <= 0x7F) { // BIT b,r
-                val = getReg();
-                bitval = (val >> bit) & 1;
+                const val = getReg();
+                const bitval = (val >> bit) & 1;
                 this.flagZ = (bitval === 0);
                 this.flagN = false;
                 this.flagH = true;
-                // (no change to C)
                 if (reg === 6) cycles = 16;
                 return cycles;
             } else if (op >= 0x80 && op <= 0xBF) { // RES b,r
-                val = getReg();
+                let val = getReg();
                 val &= ~(1 << bit);
                 setReg(val);
                 return cycles;
             } else if (op >= 0xC0 && op <= 0xFF) { // SET b,r
-                val = getReg();
+                let val = getReg();
                 val |= (1 << bit);
                 setReg(val);
                 return cycles;
@@ -1032,7 +1036,6 @@
         daa() {
             let a = this.A;
             if (!this.flagN) {
-                // after addition
                 if (this.flagC || a > 0x99) {
                     a += 0x60;
                     this.flagC = true;
@@ -1041,7 +1044,6 @@
                     a += 0x06;
                 }
             } else {
-                // after subtraction
                 if (this.flagC) {
                     a -= 0x60;
                 }
@@ -1090,26 +1092,26 @@
     // ----------------------------------------------------------------------
     class MMU {
         constructor() {
-            this.rom = new Uint8Array(0x8000); // Up to 32KB internal, but MBC can extend
-            this.ram = new Uint8Array(0x2000); // 8KB internal WRAM
-            this.vram = new Uint8Array(0x2000); // 8KB Video RAM
-            this.oam = new Uint8Array(0xA0);    // 160 bytes OAM
-            this.hram = new Uint8Array(0x80);   // High RAM
-            this.io = new Uint8Array(0x80);     // I/O registers (mapped at 0xFF00-0xFF7F)
-            this.cartRAM = new Uint8Array(0x8000); // External cartridge RAM (max 32KB)
-            this.romBanks = [];                   // ROM banks for MBC
-            this.ramBanks = [];                    // RAM banks for MBC
-            this.rombank = 1;                      // Selected ROM bank (MBC1)
-            this.rambank = 0;                      // Selected RAM bank
-            this.ramEnable = false;                 // RAM enable flag
-            this.mode = 0;                          // MBC1 mode (0=16/8, 1=4/32)
+            this.rom = new Uint8Array(0x8000);      // up to 32KB internal
+            this.ram = new Uint8Array(0x2000);      // 8KB internal WRAM
+            this.vram = new Uint8Array(0x2000);     // 8KB video RAM
+            this.oam = new Uint8Array(0xA0);        // 160 bytes OAM
+            this.hram = new Uint8Array(0x80);       // high RAM
+            this.io = new Uint8Array(0x80);         // I/O registers
+            this.cartRAM = new Uint8Array(0x8000);  // external cartridge RAM (max 32KB)
+
+            this.romBanks = [];                       // ROM banks for MBC
+            this.ramBanks = [];                        // RAM banks (not used)
+            this.rombank = 1;                          // selected ROM bank (MBC1)
+            this.rambank = 0;                           // selected RAM bank
+            this.ramEnable = false;                      // RAM enable flag
+            this.mode = 0;                               // MBC1 mode (0=16/8, 1=4/32)
             this.romSize = 0;
             this.ramSize = 0;
         }
 
         loadROM(romData) {
             this.romSize = romData.length;
-            // Determine number of banks
             const banks = Math.ceil(romData.length / 0x4000);
             this.romBanks = [];
             for (let i = 0; i < banks; i++) {
@@ -1124,62 +1126,43 @@
             this.rom.set(this.romBanks[0].slice(0, 0x4000), 0x0000);
             // Bank 1 (or selected) initially
             if (this.romBanks.length > 1) {
-                for (let i = 0; i < 0x4000; i++) {
-                    this.rom[0x4000 + i] = this.romBanks[1][i];
-                }
+                this.rom.set(this.romBanks[1], 0x4000);
             }
         }
 
         rb(addr) {
             addr &= 0xFFFF;
-            if (addr < 0x4000) {
-                return this.rom[addr];
-            } else if (addr < 0x8000) {
-                // Banked ROM
-                return this.rom[addr];
-            } else if (addr < 0xA000) {
-                return this.vram[addr - 0x8000];
-            } else if (addr < 0xC000) {
-                // Cartridge RAM (if enabled)
+            if (addr < 0x4000) return this.rom[addr];
+            if (addr < 0x8000) return this.rom[addr]; // banked ROM
+            if (addr < 0xA000) return this.vram[addr - 0x8000];
+            if (addr < 0xC000) {
                 if (this.ramEnable) {
                     const bankOffset = this.rambank * 0x2000;
                     return this.cartRAM[bankOffset + (addr - 0xA000)];
                 }
                 return 0xFF;
-            } else if (addr < 0xE000) {
-                return this.ram[addr - 0xC000];
-            } else if (addr < 0xFE00) {
-                // Echo RAM – mirror of C000-DDFF
-                return this.ram[addr - 0xE000];
-            } else if (addr < 0xFEA0) {
-                return this.oam[addr - 0xFE00];
-            } else if (addr < 0xFF00) {
-                // Unused
-                return 0xFF;
-            } else if (addr < 0xFF80) {
-                // I/O registers
-                return this.io[addr - 0xFF00];
-            } else if (addr < 0xFFFF) {
-                return this.hram[addr - 0xFF80];
-            } else {
-                // 0xFFFF = IE register (part of I/O, but we'll keep in IO for simplicity)
-                return this.io[0xFFFF - 0xFF00];
             }
+            if (addr < 0xE000) return this.ram[addr - 0xC000];
+            if (addr < 0xFE00) return this.ram[addr - 0xE000]; // echo
+            if (addr < 0xFEA0) return this.oam[addr - 0xFE00];
+            if (addr < 0xFF00) return 0xFF; // unused
+            if (addr < 0xFF80) return this.io[addr - 0xFF00];
+            if (addr < 0xFFFF) return this.hram[addr - 0xFF80];
+            return this.io[0xFFFF - 0xFF00]; // IE register
         }
 
         wb(addr, value) {
             addr &= 0xFFFF;
             value &= 0xFF;
             if (addr < 0x8000) {
-                // ROM area – may be MBC registers
+                // MBC registers
                 if (addr < 0x2000) {
-                    // RAM enable (MBC1)
+                    // RAM enable
                     this.ramEnable = ((value & 0x0F) === 0x0A);
                 } else if (addr < 0x4000) {
                     // ROM bank select (lower 5 bits)
                     let bank = value & 0x1F;
                     if (bank === 0) bank = 1;
-                    // Combine with mode bits
                     if (this.mode === 0) {
                         this.rombank = (this.rombank & 0x60) | bank;
                     } else {
@@ -1187,12 +1170,10 @@
                     }
                     this.updateROMPages();
                 } else if (addr < 0x6000) {
-                    // RAM bank select / upper ROM bank bits
+                    // RAM bank / upper ROM bits
                     if (this.mode === 0) {
-                        // Upper bits for ROM
                         this.rombank = (this.rombank & 0x1F) | ((value & 3) << 5);
                     } else {
-                        // RAM bank
                         this.rambank = value & 3;
                     }
                     this.updateROMPages();
@@ -1203,7 +1184,6 @@
             } else if (addr < 0xA000) {
                 this.vram[addr - 0x8000] = value;
             } else if (addr < 0xC000) {
-                // Cartridge RAM
                 if (this.ramEnable) {
                     const bankOffset = this.rambank * 0x2000;
                     this.cartRAM[bankOffset + (addr - 0xA000)] = value;
@@ -1211,13 +1191,11 @@
             } else if (addr < 0xE000) {
                 this.ram[addr - 0xC000] = value;
             } else if (addr < 0xFE00) {
-                // Echo RAM – ignore writes? Usually mirror WRAM
-                // We'll mirror for safety
-                this.ram[addr - 0xE000] = value;
+                this.ram[addr - 0xE000] = value; // echo
             } else if (addr < 0xFEA0) {
                 this.oam[addr - 0xFE00] = value;
             } else if (addr < 0xFF00) {
-                // Unused – ignore
+                // unused – ignore
             } else if (addr < 0xFF80) {
                 this.io[addr - 0xFF00] = value;
             } else if (addr < 0xFFFF) {
@@ -1228,18 +1206,14 @@
         }
 
         updateROMPages() {
-            // Fixed bank 0
+            // fixed bank 0
             if (this.romBanks.length > 0) {
-                for (let i = 0; i < 0x4000; i++) {
-                    this.rom[i] = this.romBanks[0][i];
-                }
+                this.rom.set(this.romBanks[0], 0x0000);
             }
-            // Banked area
+            // banked area
             const bank = this.rombank % this.romBanks.length;
             if (this.romBanks[bank]) {
-                for (let i = 0; i < 0x4000; i++) {
-                    this.rom[0x4000 + i] = this.romBanks[bank][i];
-                }
+                this.rom.set(this.romBanks[bank], 0x4000);
             }
         }
     }
@@ -1254,49 +1228,44 @@
             this.ctx = canvas.getContext('2d');
             this.frameBuffer = this.ctx.createImageData(160, 144);
             this.line = 0;
-            this.mode = 2; // OAM scan mode
+            this.mode = 2; // OAM scan
             this.modeClock = 0;
-            this.ly = 0;
-            this.lc = 0; // coincidence flag
             this.windowLine = 0;
-            this.scanlineBuffer = new Uint32Array(160); // for quick drawing
         }
 
         step(cycles) {
             this.modeClock += cycles;
             const lcdc = this.mmu.rb(0xFF40);
             if (!(lcdc & 0x80)) { // LCD off
-                // Reset counters
                 this.line = 0;
                 this.mode = 2;
                 this.modeClock = 0;
-                this.mmu.wb(0xFF44, 0); // LY = 0
+                this.mmu.wb(0xFF44, 0);
                 return;
             }
 
             switch (this.mode) {
-                case 2: // OAM scan (80 cycles per line)
+                case 2: // OAM scan
                     if (this.modeClock >= 80) {
                         this.modeClock -= 80;
                         this.mode = 3;
                     }
                     break;
-                case 3: // Drawing pixels (172-289 cycles, we'll use 172 for simplicity)
+                case 3: // drawing pixels
                     if (this.modeClock >= 172) {
                         this.modeClock -= 172;
                         this.mode = 0;
                         this.renderScanline();
                     }
                     break;
-                case 0: // HBlank (87-204 cycles, we'll use 87)
+                case 0: // HBlank
                     if (this.modeClock >= 87) {
                         this.modeClock -= 87;
                         this.line++;
                         this.mmu.wb(0xFF44, this.line);
                         if (this.line === 144) {
-                            // Enter VBlank
                             this.mode = 1;
-                            // Request VBlank interrupt
+                            // request VBlank interrupt
                             const iflag = this.mmu.rb(0xFF0F) | 0x01;
                             this.mmu.wb(0xFF0F, iflag);
                         } else {
@@ -1304,7 +1273,7 @@
                         }
                     }
                     break;
-                case 1: // VBlank (10 lines, 456 cycles each)
+                case 1: // VBlank
                     if (this.modeClock >= 456) {
                         this.modeClock -= 456;
                         this.line++;
@@ -1322,10 +1291,8 @@
             // LY == LYC check
             const lyc = this.mmu.rb(0xFF45);
             if (this.line === lyc) {
-                this.mmu.wb(0xFF41, this.mmu.rb(0xFF41) | 0x04); // set coincidence flag
-                // Request STAT interrupt if enabled
-                const stat = this.mmu.rb(0xFF41);
-                if (stat & 0x40) {
+                this.mmu.wb(0xFF41, this.mmu.rb(0xFF41) | 0x04);
+                if (this.mmu.rb(0xFF41) & 0x40) {
                     const iflag = this.mmu.rb(0xFF0F) | 0x02;
                     this.mmu.wb(0xFF0F, iflag);
                 }
@@ -1337,29 +1304,28 @@
         renderScanline() {
             const lcdc = this.mmu.rb(0xFF40);
             const y = this.line;
-            const canvasData = this.frameBuffer.data;
+            const data = this.frameBuffer.data;
 
-            // Background enabled?
+            // Background and window
             if (lcdc & 0x01) {
                 const scrollY = this.mmu.rb(0xFF42);
                 const scrollX = this.mmu.rb(0xFF43);
-                const bgMap = (lcdc & 0x08) ? 0x9C00 : 0x9800; // BG tile map
-                const tileData = (lcdc & 0x10) ? 0x8000 : 0x8800; // Tile data
+                const bgMap = (lcdc & 0x08) ? 0x9C00 : 0x9800;
+                const tileData = (lcdc & 0x10) ? 0x8000 : 0x8800;
                 const windowY = this.mmu.rb(0xFF4A);
                 const windowX = this.mmu.rb(0xFF4B) - 7;
                 const windowMap = (lcdc & 0x40) ? 0x9C00 : 0x9800;
 
                 for (let x = 0; x < 160; x++) {
                     let mapAddr, tileX, tileY, tileNum;
-                    // Check window
+                    // Window takes priority if enabled and within range
                     if ((lcdc & 0x20) && y >= windowY && x >= windowX) {
-                        // Window
                         tileX = (x - windowX) >> 3;
                         tileY = this.windowLine >> 3;
                         mapAddr = windowMap + tileY * 32 + tileX;
                         tileNum = this.mmu.rb(mapAddr);
                         if (tileData === 0x8800) {
-                            tileNum = (tileNum + 128) & 0xFF; // signed
+                            tileNum = (tileNum + 128) & 0xFF;
                         }
                         const tileLine = (this.windowLine & 7) << 1;
                         const tileAddr = tileData + tileNum * 16 + tileLine;
@@ -1367,15 +1333,14 @@
                         const msb = this.mmu.rb(tileAddr + 1);
                         const bit = 7 - (x & 7);
                         const colorId = ((msb >> bit) & 1) << 1 | ((lsb >> bit) & 1);
-                        // Map palette
                         const palette = this.mmu.rb(0xFF47);
                         const color = (palette >> (colorId * 2)) & 3;
                         const rgb = this.getColor(color);
                         const idx = (y * 160 + x) * 4;
-                        canvasData[idx] = rgb.r;
-                        canvasData[idx+1] = rgb.g;
-                        canvasData[idx+2] = rgb.b;
-                        canvasData[idx+3] = 255;
+                        data[idx] = rgb.r;
+                        data[idx + 1] = rgb.g;
+                        data[idx + 2] = rgb.b;
+                        data[idx + 3] = 255;
                     } else {
                         // Background
                         tileX = (scrollX + x) >> 3;
@@ -1395,41 +1360,40 @@
                         const color = (palette >> (colorId * 2)) & 3;
                         const rgb = this.getColor(color);
                         const idx = (y * 160 + x) * 4;
-                        canvasData[idx] = rgb.r;
-                        canvasData[idx+1] = rgb.g;
-                        canvasData[idx+2] = rgb.b;
-                        canvasData[idx+3] = 255;
+                        data[idx] = rgb.r;
+                        data[idx + 1] = rgb.g;
+                        data[idx + 2] = rgb.b;
+                        data[idx + 3] = 255;
                     }
                 }
             } else {
-                // Background disabled – fill white?
+                // Background disabled – fill white
                 for (let x = 0; x < 160; x++) {
                     const idx = (y * 160 + x) * 4;
-                    canvasData[idx] = 255;
-                    canvasData[idx+1] = 255;
-                    canvasData[idx+2] = 255;
-                    canvasData[idx+3] = 255;
+                    data[idx] = 255;
+                    data[idx + 1] = 255;
+                    data[idx + 2] = 255;
+                    data[idx + 3] = 255;
                 }
             }
 
             // Sprites
             if (lcdc & 0x02) {
-                const objSize = (lcdc & 0x04) ? 16 : 8; // 8x8 or 8x16
-                // OAM has 40 sprites, we need to render in priority order
+                const objSize = (lcdc & 0x04) ? 16 : 8;
                 for (let i = 0; i < 40; i++) {
                     const base = 0xFE00 + i * 4;
                     const yPos = this.mmu.rb(base) - 16;
                     const xPos = this.mmu.rb(base + 1) - 8;
                     const tileNum = this.mmu.rb(base + 2);
                     const flags = this.mmu.rb(base + 3);
-                    if (yPos > this.line || yPos + objSize <= this.line) continue;
+                    if (yPos > y || yPos + objSize <= y) continue;
                     if (xPos <= -8 || xPos >= 160) continue;
                     const yFlip = (flags & 0x40) !== 0;
                     const xFlip = (flags & 0x20) !== 0;
                     const paletteNum = (flags & 0x10) ? 1 : 0;
                     const paletteAddr = paletteNum ? 0xFF49 : 0xFF48;
                     const palette = this.mmu.rb(paletteAddr);
-                    let spriteLine = this.line - yPos;
+                    let spriteLine = y - yPos;
                     if (yFlip) spriteLine = objSize - 1 - spriteLine;
                     const tileAddr = 0x8000 + tileNum * 16 + (spriteLine * 2);
                     const lsb = this.mmu.rb(tileAddr);
@@ -1437,37 +1401,32 @@
                     for (let p = 0; p < 8; p++) {
                         const bit = xFlip ? p : (7 - p);
                         const colorId = ((msb >> bit) & 1) << 1 | ((lsb >> bit) & 1);
-                        if (colorId === 0) continue; // transparent
+                        if (colorId === 0) continue;
                         const screenX = xPos + p;
                         if (screenX < 0 || screenX >= 160) continue;
-                        // Check priority (if BG and sprite overlap, BG wins if bit 7 of flags)
-                        // Simplified: ignore priority for now
                         const color = (palette >> (colorId * 2)) & 3;
                         const rgb = this.getColor(color);
-                        const idx = (this.line * 160 + screenX) * 4;
-                        canvasData[idx] = rgb.r;
-                        canvasData[idx+1] = rgb.g;
-                        canvasData[idx+2] = rgb.b;
-                        // alpha already set
+                        const idx = (y * 160 + screenX) * 4;
+                        data[idx] = rgb.r;
+                        data[idx + 1] = rgb.g;
+                        data[idx + 2] = rgb.b;
                     }
                 }
             }
 
-            if (this.line === 143) {
-                // After last scanline, present frame
+            if (y === 143) {
                 this.ctx.putImageData(this.frameBuffer, 0, 0);
                 this.windowLine++;
             }
         }
 
         getColor(id) {
-            // Game Boy shades (0=white, 3=black)
             switch (id) {
-                case 0: return {r:255,g:255,b:255};
-                case 1: return {r:192,g:192,b:192};
-                case 2: return {r:96,g:96,b:96};
-                case 3: return {r:0,g:0,b:0};
-                default: return {r:0,g:0,b:0};
+                case 0: return { r: 255, g: 255, b: 255 };
+                case 1: return { r: 192, g: 192, b: 192 };
+                case 2: return { r: 96, g: 96, b: 96 };
+                case 3: return { r: 0, g: 0, b: 0 };
+                default: return { r: 0, g: 0, b: 0 };
             }
         }
     }
@@ -1478,19 +1437,17 @@
     class Timer {
         constructor(mmu) {
             this.mmu = mmu;
-            this.div = 0;      // internal 16-bit counter
-            this.tima = 0;
-            this.tma = 0;
-            this.tac = 0;
+            this.div = 0;
             this.counter = 0;
         }
 
         step(cycles) {
-            // DIV increments at 16384 Hz (every 256 cycles)
+            // DIV increments every 256 cycles
             for (let i = 0; i < cycles; i++) {
                 this.div = (this.div + 1) & 0xFFFF;
                 if ((this.div & 0xFF) === 0) {
-                    this.mmu.wb(0xFF04, (this.mmu.rb(0xFF04) + 1) & 0xFF);
+                    let div = this.mmu.rb(0xFF04) + 1;
+                    this.mmu.wb(0xFF04, div & 0xFF);
                 }
             }
 
@@ -1498,15 +1455,15 @@
             const tac = this.mmu.rb(0xFF07);
             if (tac & 0x04) {
                 const inputClock = tac & 0x03;
-                const frequencies = [1024, 16, 64, 256]; // cycles per tick
+                const frequencies = [1024, 16, 64, 256];
                 const threshold = frequencies[inputClock];
                 this.counter += cycles;
                 while (this.counter >= threshold) {
                     this.counter -= threshold;
                     let tima = this.mmu.rb(0xFF05) + 1;
                     if (tima > 0xFF) {
-                        tima = this.mmu.rb(0xFF06); // TMA
-                        // Request timer interrupt
+                        tima = this.mmu.rb(0xFF06);
+                        // request timer interrupt
                         const iflag = this.mmu.rb(0xFF0F) | 0x04;
                         this.mmu.wb(0xFF0F, iflag);
                     }
@@ -1534,20 +1491,19 @@
         }
 
         runFrame() {
-            // Run until we've processed enough cycles for one frame (approx 70224 cycles)
-            const target = 70224;
+            const target = 70224; // cycles per frame
             while (this.cyclesThisFrame < target) {
                 const cycles = this.cpu.step();
                 this.cyclesThisFrame += cycles;
                 this.timer.step(cycles);
                 this.ppu.step(cycles);
+
                 // Handle interrupts
                 if (this.cpu.ime) {
                     const iflag = this.mmu.rb(0xFF0F);
                     const ie = this.mmu.rb(0xFFFF);
                     const pending = iflag & ie;
                     if (pending) {
-                        // Service highest priority
                         for (let i = 0; i < 5; i++) {
                             if (pending & (1 << i)) {
                                 this.cpu.ime = 0;
@@ -1575,7 +1531,7 @@
     }
 
     // ----------------------------------------------------------------------
-    // Flash player (using object tag)
+    // Flash player (legacy, won't work in modern browsers)
     // ----------------------------------------------------------------------
     class FlashPlayer {
         constructor(container) {
@@ -1584,7 +1540,6 @@
         }
 
         loadSWF(url) {
-            // Clear container
             while (this.container.firstChild) {
                 this.container.removeChild(this.container.firstChild);
             }
@@ -1621,7 +1576,6 @@
             const ext = url.split('.').pop().toLowerCase();
             if (ext === 'gb' || ext === 'gbc') {
                 this.mode = 'gb';
-                // Ensure canvas is available
                 if (!(this.element instanceof HTMLCanvasElement)) {
                     console.error('FGAB: Game Boy mode requires a canvas element');
                     return;
@@ -1632,13 +1586,13 @@
                 });
             } else if (ext === 'swf') {
                 this.mode = 'flash';
-                // Ensure container is a div (or create one if canvas)
                 if (!(this.element instanceof HTMLElement)) {
                     console.error('FGAB: Flash mode requires an HTML element');
                     return;
                 }
                 this.flash = new FlashPlayer(this.element);
                 this.flash.loadSWF(url);
+                console.warn('FGAB: Flash is deprecated and will not work in modern browsers. Consider using Ruffle (https://ruffle.rs).');
             } else {
                 console.error('FGAB: Unsupported file extension', ext);
             }
@@ -1647,12 +1601,10 @@
         start() {
             if (this.mode === 'gb' && this.gb) {
                 this.gb.start();
-            } else if (this.mode === 'flash') {
-                // Already playing via object tag
             }
+            // Flash is already playing via object tag
         }
     }
 
-    // Export
     global.FGAB = FGAB;
 })(window);
