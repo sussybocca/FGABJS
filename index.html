@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>FGAB - FlashGamesGameBoy Emulator</title>
+    <style>
+        body {
+            background: #1a1a1a;
+            color: #eee;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            padding: 20px;
+        }
+        .container {
+            text-align: center;
+            background: #2d2d2d;
+            border-radius: 12px;
+            padding: 30px;
+            box-shadow: 0 8px 16px rgba(0,0,0,0.5);
+        }
+        h1 {
+            margin-top: 0;
+            color: #ffcc00;
+            text-shadow: 2px 2px 0 #aa8800;
+        }
+        canvas {
+            display: block;
+            margin: 20px auto;
+            width: 480px;        /* 3x scale */
+            height: 432px;        /* 3x scale */
+            image-rendering: pixelated;
+            image-rendering: crisp-edges;
+            border: 4px solid #444;
+            border-radius: 8px;
+            background: #000;
+        }
+        .info {
+            margin: 20px 0;
+            font-size: 0.9rem;
+            color: #aaa;
+        }
+        .status {
+            padding: 8px 16px;
+            background: #3a3a3a;
+            border-radius: 20px;
+            display: inline-block;
+            font-weight: bold;
+        }
+        .footer {
+            margin-top: 30px;
+            font-size: 0.8rem;
+            color: #666;
+        }
+        a {
+            color: #ffcc00;
+            text-decoration: none;
+        }
+        a:hover {
+            text-decoration: underline;
+        }
+        button {
+            background: #ffcc00;
+            border: none;
+            color: #1a1a1a;
+            font-weight: bold;
+            padding: 10px 24px;
+            border-radius: 30px;
+            cursor: pointer;
+            font-size: 1rem;
+            transition: background 0.2s;
+            margin-top: 10px;
+        }
+        button:hover {
+            background: #ffdb4d;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎮 FGAB Emulator</h1>
+        <p>Play Game Boy ROMs (.gb) and Flash games (.swf) – no plugins required*</p>
+        
+        <!-- Game Boy display canvas -->
+        <canvas id="gbCanvas" width="160" height="144"></canvas>
+        
+        <div class="status" id="status">⏳ Loading FGAB.js...</div>
+        
+        <div class="info">
+            <p><strong>Current ROM:</strong> <span id="romName">pokemon-red.gb</span></p>
+            <p><em>*Flash games require a browser with NPAPI support (deprecated).</em></p>
+        </div>
+        
+        <button id="loadButton">Load Another ROM</button>
+        <input type="file" id="fileInput" accept=".gb,.gbc,.swf" style="display: none;">
+    </div>
+    
+    <div class="footer">
+        <p>FGAB.js – Custom Game Boy / Flash emulator • <a href="https://github.com/yourname/fgab" target="_blank">GitHub</a></p>
+    </div>
+
+    <!-- Include our custom emulator -->
+    <script src="FGAB.js"></script>
+    <script>
+        (function() {
+            // Get DOM elements
+            const canvas = document.getElementById('gbCanvas');
+            const statusEl = document.getElementById('status');
+            const romNameEl = document.getElementById('romName');
+            const loadButton = document.getElementById('loadButton');
+            const fileInput = document.getElementById('fileInput');
+
+            // FGAB instance
+            let emulator = null;
+
+            // Function to load and start a ROM from a URL
+            function loadROMFromUrl(url) {
+                if (!emulator) {
+                    emulator = new FGAB(canvas);
+                }
+                
+                statusEl.textContent = '⏳ Loading ROM...';
+                romNameEl.textContent = url.split('/').pop();
+                
+                try {
+                    emulator.loadROM(url);
+                    // Give it a moment to load, then start
+                    setTimeout(() => {
+                        emulator.start();
+                        statusEl.textContent = '✅ Running';
+                    }, 500);
+                } catch (e) {
+                    statusEl.textContent = '❌ Error loading ROM';
+                    console.error(e);
+                }
+            }
+
+            // Load a default Game Boy ROM (replace with your own)
+            // For demonstration, we use a relative path – you must place a .gb file in the 'roms' folder
+            // or change this URL to an absolute path to a valid ROM.
+            const defaultRom = 'roms/dude.gb'; // <-- CHANGE THIS TO YOUR ROM FILE
+            
+            // Check if the ROM exists (optional, just for user feedback)
+            fetch(defaultRom, { method: 'HEAD' })
+                .then(response => {
+                    if (response.ok) {
+                        loadROMFromUrl(defaultRom);
+                    } else {
+                        statusEl.textContent = '⚠️ Default ROM not found. Use file picker.';
+                        romNameEl.textContent = '[none]';
+                        // Still create emulator but don't load
+                        emulator = new FGAB(canvas);
+                    }
+                })
+                .catch(() => {
+                    statusEl.textContent = '⚠️ Default ROM not accessible. Use file picker.';
+                    romNameEl.textContent = '[none]';
+                    emulator = new FGAB(canvas);
+                });
+
+            // Handle file picker for local files
+            loadButton.addEventListener('click', () => {
+                fileInput.click();
+            });
+
+            fileInput.addEventListener('change', (event) => {
+                const file = event.target.files[0];
+                if (!file) return;
+
+                const url = URL.createObjectURL(file);
+                romNameEl.textContent = file.name;
+                statusEl.textContent = '⏳ Loading local file...';
+
+                if (!emulator) {
+                    emulator = new FGAB(canvas);
+                }
+
+                // Determine mode by extension
+                const ext = file.name.split('.').pop().toLowerCase();
+                if (ext === 'gb' || ext === 'gbc') {
+                    // For Game Boy, we need to read the file as array buffer and pass to loadROM
+                    const reader = new FileReader();
+                    reader.onload = function(e) {
+                        const arrayBuffer = e.target.result;
+                        const uint8View = new Uint8Array(arrayBuffer);
+                        // FGAB's loadROM expects a URL, but we can also extend it to accept binary data.
+                        // Since our FGAB currently only accepts URL, we need to either modify FGAB or create a blob URL.
+                        // Let's create a blob URL from the file.
+                        const blob = new Blob([arrayBuffer], { type: 'application/octet-stream' });
+                        const blobUrl = URL.createObjectURL(blob);
+                        emulator.loadROM(blobUrl);
+                        setTimeout(() => {
+                            emulator.start();
+                            statusEl.textContent = '✅ Running';
+                        }, 500);
+                    };
+                    reader.readAsArrayBuffer(file);
+                } else if (ext === 'swf') {
+                    // Flash: just pass the blob URL
+                    const blobUrl = URL.createObjectURL(file);
+                    emulator.loadROM(blobUrl);
+                    statusEl.textContent = '✅ Flash loaded (may not work in modern browsers)';
+                } else {
+                    statusEl.textContent = '❌ Unsupported file type';
+                }
+            });
+        })();
+    </script>
+</body>
+</html>
